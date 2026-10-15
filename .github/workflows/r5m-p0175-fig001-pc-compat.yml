@@ -111,11 +111,18 @@ jobs:
           }
 
           const expectedLayers = [
-            {id: 'board-pieces', order: 10, entity_ids: ['general-board', 'piece-layout']},
-            {id: 'module-example', order: 20, entity_ids: ['example-module'], annotation_ids: ['ann-example-module']},
-            {id: 'fields', order: 30, entity_ids: ['field-list'], annotation_ids: ['ann-field-list']},
+            ['board-pieces', 10, ['general-board', 'piece-layout'], []],
+            ['module-example', 20, ['example-module'], ['ann-example-module']],
+            ['fields', 30, ['field-list'], ['ann-field-list']],
           ];
-          if (JSON.stringify(figure.layers) !== JSON.stringify(expectedLayers)) throw new Error('layers mismatch');
+          if (figure.layers?.length !== expectedLayers.length) throw new Error('layer count mismatch');
+          for (let i = 0; i < expectedLayers.length; i += 1) {
+            const [id, order, entityIds, annotationIds] = expectedLayers[i];
+            const layer = figure.layers[i];
+            if (layer?.id !== id || layer?.order !== order) throw new Error(`layer identity mismatch ${i}`);
+            if (JSON.stringify(layer.entity_ids ?? []) !== JSON.stringify(entityIds)) throw new Error(`layer entity refs mismatch ${id}`);
+            if (JSON.stringify(layer.annotation_ids ?? []) !== JSON.stringify(annotationIds)) throw new Error(`layer annotation refs mismatch ${id}`);
+          }
           if (figure.camera?.coordinate_space !== 'normalized_figure') throw new Error('camera mismatch');
           const viewport = figure.camera?.viewport;
           if (!viewport || viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1) throw new Error('viewport mismatch');
