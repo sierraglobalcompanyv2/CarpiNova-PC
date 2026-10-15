@@ -1,0 +1,111 @@
+name: R5K P0163 FIG001 Postmerge PC Full-State
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  fullstate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact merged Knowledge main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompany-rgb/CarpiNova-Knowledge
+          ref: b9f800490d0fb6a707a384eb2869113af906a041
+          path: knowledge
+
+      - name: Checkout exact PC main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompanyv2/CarpiNova-PC
+          ref: 8996b9b874119de007347f10f003dbeea8aaf742
+          path: pc
+
+      - name: Verify immutable inputs
+        run: |
+          test "$(git -C knowledge rev-parse HEAD)" = "b9f800490d0fb6a707a384eb2869113af906a041"
+          test "$(git -C pc rev-parse HEAD)" = "8996b9b874119de007347f10f003dbeea8aaf742"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+
+      - name: Install Knowledge dependencies
+        working-directory: knowledge
+        run: uv sync --all-groups
+
+      - name: Install PC dependencies
+        working-directory: pc
+        run: npm ci
+
+      - name: Prepare merged Knowledge full state
+        working-directory: pc
+        run: node scripts/prepare-knowledge.mjs --knowledge-root ../knowledge
+
+      - name: Verify merged P0163 FIG001 contract
+        working-directory: pc
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const manifest = JSON.parse(await readFile('generated/knowledge/manifest.json', 'utf8'));
+          const bundle = JSON.parse(await readFile('generated/knowledge/figures.bundle.json', 'utf8'));
+          if (manifest.knowledge_version !== '1.2.0') throw new Error('unexpected Knowledge version');
+          const figure = bundle.figures.find((item) => item.figure_id === 'FIG-CPNC-2025-P0163-001');
+          if (!figure) throw new Error('P0163 FIG001 missing');
+          if (figure.reconstruction?.render_contract !== 'normalized-2d-v1') throw new Error('render contract mismatch');
+          if (figure.reconstruction?.deterministic_required !== true) throw new Error('deterministic flag mismatch');
+          if (figure.reconstruction?.generative_image_allowed !== false) throw new Error('generative flag mismatch');
+          if (!Array.isArray(figure.measurements) || figure.measurements.length !== 0) throw new Error('measurements mismatch');
+          const expectedIds = ['rafter-square', 'combination-square', 'carpenter-square', 'bubble-level'];
+          if (figure.entities?.length !== 4) throw new Error('entity count mismatch');
+          const entities = new Map(figure.entities.map((entity) => [entity.id, entity]));
+          for (const id of expectedIds) {
+            const entity = entities.get(id);
+            if (!entity) throw new Error(`missing entity ${id}`);
+            if (entity.geometry?.primitive !== 'rect' || entity.geometry?.precision !== 'approximate') throw new Error(`geometry mismatch ${id}`);
+          }
+          const expectedLabels = new Map([
+            ['rafter-square', 'Escuadra Rafter'],
+            ['combination-square', 'Escuadra combinada'],
+            ['carpenter-square', 'Escuadra carpintero'],
+            ['bubble-level', 'Nivel de burbuja'],
+          ]);
+          if (figure.annotations?.length !== 4) throw new Error('annotation count mismatch');
+          for (const annotation of figure.annotations) {
+            if (expectedLabels.get(annotation.target_entity_id) !== annotation.text) throw new Error(`annotation semantics mismatch ${annotation.target_entity_id}`);
+            if (!annotation.id || annotation.placement?.precision !== 'approximate') throw new Error(`annotation contract mismatch ${annotation.target_entity_id}`);
+          }
+          if (figure.relationships?.length !== 3 || figure.relationships.some((rel) => rel.type !== 'same_reference_group')) throw new Error('relationship mismatch');
+          if (figure.layers?.flatMap((layer) => layer.entity_ids ?? []).length !== 4) throw new Error('entity layer coverage mismatch');
+          if (figure.layers?.flatMap((layer) => layer.annotation_ids ?? []).length !== 4) throw new Error('annotation layer coverage mismatch');
+          if (figure.camera?.coordinate_space !== 'normalized_figure') throw new Error('camera mismatch');
+          console.log(JSON.stringify({knowledge_version: manifest.knowledge_version, figure_id: figure.figure_id, render_contract: figure.reconstruction.render_contract, entities: figure.entities.length, annotations: figure.annotations.length, measurements: figure.measurements.length, relationships: figure.relationships.length, layers: figure.layers.length}));
+          NODE
+
+      - name: Run PC tests
+        working-directory: pc
+        run: npm test
+
+      - name: Typecheck
+        working-directory: pc
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: pc
+        run: npm run build
+
+      - name: Audit dependencies
+        working-directory: pc
+        run: npm audit
