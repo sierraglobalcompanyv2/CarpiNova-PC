@@ -1,0 +1,169 @@
+name: R5N P0177 PC Postmerge Full-State
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Knowledge merged main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompany-rgb/CarpiNova-Knowledge
+          ref: d7de027416f0701802a2b98417da13cbcdb01b68
+          path: knowledge
+
+      - name: Checkout exact PC main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompanyv2/CarpiNova-PC
+          ref: 8996b9b874119de007347f10f003dbeea8aaf742
+          path: pc
+
+      - name: Verify immutable inputs
+        run: |
+          test "$(git -C knowledge rev-parse HEAD)" = "d7de027416f0701802a2b98417da13cbcdb01b68"
+          test "$(git -C pc rev-parse HEAD)" = "8996b9b874119de007347f10f003dbeea8aaf742"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+
+      - name: Install Knowledge dependencies
+        working-directory: knowledge
+        run: uv sync --all-groups
+
+      - name: Install PC dependencies
+        working-directory: pc
+        run: npm ci
+
+      - name: Prepare exact Knowledge merged main
+        working-directory: pc
+        run: node scripts/prepare-knowledge.mjs --knowledge-root ../knowledge
+
+      - name: Verify installed P0177 FIG001 contract
+        working-directory: pc
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const manifest = JSON.parse(await readFile('generated/knowledge/manifest.json', 'utf8'));
+          const bundle = JSON.parse(await readFile('generated/knowledge/figures.bundle.json', 'utf8'));
+          if (manifest.knowledge_version !== '1.2.0') throw new Error('unexpected Knowledge version');
+          const figure = bundle.figures.find((item) => item.figure_id === 'FIG-CPNC-2025-P0177-001');
+          if (!figure) throw new Error('P0177 FIG001 missing');
+          if (figure.reconstruction?.render_contract !== 'normalized-2d-v1') throw new Error('render contract mismatch');
+          if (figure.reconstruction?.deterministic_required !== true) throw new Error('deterministic flag mismatch');
+          if (figure.reconstruction?.generative_image_allowed !== false) throw new Error('generative flag mismatch');
+
+          const expectedBounds = new Map([
+            ['board-piece', {x: 0.15, y: 0.16, width: 0.55, height: 0.46}],
+            ['long-edge-1', {x: 0.15, y: 0.16, width: 0.55, height: 0.03}],
+            ['long-edge-2', {x: 0.15, y: 0.59, width: 0.55, height: 0.03}],
+            ['short-edge-1', {x: 0.15, y: 0.16, width: 0.03, height: 0.46}],
+            ['short-edge-2', {x: 0.67, y: 0.16, width: 0.03, height: 0.46}],
+            ['edge-band-types', {x: 0.05, y: 0.70, width: 0.90, height: 0.24}],
+          ]);
+          if (figure.entities?.length !== expectedBounds.size) throw new Error('entity count mismatch');
+          const entities = new Map(figure.entities.map((entity) => [entity.id, entity]));
+          for (const [id, expected] of expectedBounds) {
+            const entity = entities.get(id);
+            if (!entity) throw new Error(`missing entity ${id}`);
+            if (entity.geometry?.primitive !== 'rect' || entity.geometry?.precision !== 'approximate') throw new Error(`geometry contract mismatch ${id}`);
+            const bounds = entity.geometry?.bounds;
+            if (!bounds || bounds.x !== expected.x || bounds.y !== expected.y || bounds.width !== expected.width || bounds.height !== expected.height) throw new Error(`bounds mismatch ${id}`);
+          }
+
+          const expectedMeasurements = [
+            'MEAS-CPNC-2025-P0177-001',
+            'MEAS-CPNC-2025-P0177-002',
+            'MEAS-CPNC-2025-P0177-003',
+            'MEAS-CPNC-2025-P0177-004',
+            'MEAS-CPNC-2025-P0177-005',
+            'MEAS-CPNC-2025-P0177-006',
+          ];
+          if (figure.measurements?.length !== expectedMeasurements.length) throw new Error('measurement count mismatch');
+          for (let i = 0; i < expectedMeasurements.length; i += 1) {
+            if (figure.measurements[i] !== expectedMeasurements[i]) throw new Error(`measurement mismatch ${i}`);
+          }
+
+          const expectedAnnotations = new Map([
+            ['long-edge-1', ['ann-long-edge-1', 'LARGO']],
+            ['short-edge-1', ['ann-short-edge-1', 'ANCHO']],
+            ['edge-band-types', ['ann-edge-band-types', '0.45 mm · 1 mm · 1.5 mm · 2 mm']],
+          ]);
+          if (figure.annotations?.length !== expectedAnnotations.size) throw new Error('annotation count mismatch');
+          for (const annotation of figure.annotations) {
+            const expected = expectedAnnotations.get(annotation.target_entity_id);
+            if (!expected) throw new Error(`unexpected annotation target ${annotation.target_entity_id}`);
+            const [expectedId, expectedText] = expected;
+            if (annotation.id !== expectedId || annotation.text !== expectedText) throw new Error(`annotation semantics mismatch ${annotation.target_entity_id}`);
+            if (annotation.placement?.precision !== 'approximate') throw new Error(`annotation placement mismatch ${annotation.target_entity_id}`);
+            if (typeof annotation.placement?.x !== 'number' || annotation.placement.x < 0 || annotation.placement.x > 1) throw new Error(`annotation x mismatch ${annotation.target_entity_id}`);
+            if (typeof annotation.placement?.y !== 'number' || annotation.placement.y < 0 || annotation.placement.y > 1) throw new Error(`annotation y mismatch ${annotation.target_entity_id}`);
+          }
+
+          const expectedRelationships = [
+            ['long-edge-1', 'board-piece', 'edge_of'],
+            ['long-edge-2', 'board-piece', 'edge_of'],
+            ['short-edge-1', 'board-piece', 'edge_of'],
+            ['short-edge-2', 'board-piece', 'edge_of'],
+            ['edge-band-types', 'board-piece', 'can_be_applied_to_edges_of'],
+          ];
+          if (figure.relationships?.length !== expectedRelationships.length) throw new Error('relationship count mismatch');
+          for (let i = 0; i < expectedRelationships.length; i += 1) {
+            const [from, to, type] = expectedRelationships[i];
+            const rel = figure.relationships[i];
+            if (rel?.from !== from || rel?.to !== to || rel?.type !== type) throw new Error(`relationship mismatch ${i}`);
+          }
+
+          const expectedLayers = [
+            ['piece', 10, ['board-piece'], []],
+            ['edge-labels', 20, ['long-edge-1', 'long-edge-2', 'short-edge-1', 'short-edge-2'], ['ann-long-edge-1', 'ann-short-edge-1']],
+            ['band-types', 30, ['edge-band-types'], ['ann-edge-band-types']],
+          ];
+          if (figure.layers?.length !== expectedLayers.length) throw new Error('layer count mismatch');
+          for (let i = 0; i < expectedLayers.length; i += 1) {
+            const [id, order, entityIds, annotationIds] = expectedLayers[i];
+            const layer = figure.layers[i];
+            if (layer?.id !== id || layer?.order !== order) throw new Error(`layer identity mismatch ${i}`);
+            const actualEntities = layer?.entity_ids ?? [];
+            const actualAnnotations = layer?.annotation_ids ?? [];
+            if (actualEntities.length !== entityIds.length || actualEntities.some((value, index) => value !== entityIds[index])) throw new Error(`layer entity refs mismatch ${id}`);
+            if (actualAnnotations.length !== annotationIds.length || actualAnnotations.some((value, index) => value !== annotationIds[index])) throw new Error(`layer annotation refs mismatch ${id}`);
+          }
+
+          if (figure.camera?.coordinate_space !== 'normalized_figure') throw new Error('camera mismatch');
+          const viewport = figure.camera?.viewport;
+          if (!viewport || viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1) throw new Error('viewport mismatch');
+
+          console.log(JSON.stringify({knowledge_version: manifest.knowledge_version, figure_id: figure.figure_id, render_contract: figure.reconstruction.render_contract, entities: figure.entities.length, annotations: figure.annotations.length, measurements: figure.measurements.length, relationships: figure.relationships.length, layers: figure.layers.length}));
+          NODE
+
+      - name: Run PC tests
+        working-directory: pc
+        run: npm test
+
+      - name: Typecheck
+        working-directory: pc
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: pc
+        run: npm run build
+
+      - name: Audit dependencies
+        working-directory: pc
+        run: npm audit
