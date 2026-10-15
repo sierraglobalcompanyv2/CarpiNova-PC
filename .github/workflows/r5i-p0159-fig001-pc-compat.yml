@@ -67,7 +67,7 @@ jobs:
           if (figure.reconstruction?.render_contract !== 'normalized-2d-v1') throw new Error('P0159 FIG001 render contract missing');
           if (figure.reconstruction?.deterministic_required !== true) throw new Error('P0159 FIG001 must remain deterministic');
           if (figure.reconstruction?.generative_image_allowed !== false) throw new Error('P0159 FIG001 must remain non-generative');
-          if (JSON.stringify(figure.measurements) !== JSON.stringify([])) throw new Error('P0159 FIG001 must have zero measurements');
+          if (!Array.isArray(figure.measurements) || figure.measurements.length !== 0) throw new Error('P0159 FIG001 must have zero measurements');
           const expectedBounds = {
             'longitudinal-scene': {x: 0, y: 0, width: 1, height: 0.46},
             'transverse-scene': {x: 0, y: 0.52, width: 1, height: 0.46},
@@ -77,7 +77,10 @@ jobs:
             const expected = expectedBounds[entity.id];
             if (!expected) throw new Error(`unexpected P0159 FIG001 entity ${entity.id}`);
             if (entity.geometry?.primitive !== 'rect' || entity.geometry?.precision !== 'approximate') throw new Error(`P0159 FIG001 geometry contract mismatch for ${entity.id}`);
-            if (JSON.stringify(entity.geometry.bounds) !== JSON.stringify(expected)) throw new Error(`P0159 FIG001 bounds mismatch for ${entity.id}`);
+            const actual = entity.geometry?.bounds;
+            for (const key of ['x', 'y', 'width', 'height']) {
+              if (actual?.[key] !== expected[key]) throw new Error(`P0159 FIG001 bounds mismatch for ${entity.id}.${key}: ${actual?.[key]} !== ${expected[key]}`);
+            }
           }
           const expectedAnnotations = new Map([
             ['ann-longitudinal', ['longitudinal-scene', 'Corte longitudinal']],
