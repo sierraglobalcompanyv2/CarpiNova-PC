@@ -1,0 +1,100 @@
+name: R5J P0161 FIG001 PC Compatibility
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Knowledge candidate
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompany-rgb/CarpiNova-Knowledge
+          ref: 98cf19f4cec35d274d66ece4054a86e296dea458
+          path: knowledge
+
+      - name: Checkout exact PC main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompanyv2/CarpiNova-PC
+          ref: 8996b9b874119de007347f10f003dbeea8aaf742
+          path: pc
+
+      - name: Verify immutable inputs
+        run: |
+          test "$(git -C knowledge rev-parse HEAD)" = "98cf19f4cec35d274d66ece4054a86e296dea458"
+          test "$(git -C pc rev-parse HEAD)" = "8996b9b874119de007347f10f003dbeea8aaf742"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+
+      - name: Install Knowledge dependencies
+        working-directory: knowledge
+        run: uv sync --all-groups
+
+      - name: Install PC dependencies
+        working-directory: pc
+        run: npm ci
+
+      - name: Prepare exact Knowledge candidate
+        working-directory: pc
+        run: node scripts/prepare-knowledge.mjs --knowledge-root ../knowledge
+
+      - name: Verify installed P0161 FIG001 contract
+        working-directory: pc
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const manifest = JSON.parse(await readFile('generated/knowledge/manifest.json', 'utf8'));
+          const bundle = JSON.parse(await readFile('generated/knowledge/figures.bundle.json', 'utf8'));
+          if (manifest.knowledge_version !== '1.2.0') throw new Error('unexpected Knowledge version');
+          const figure = bundle.figures.find((item) => item.figure_id === 'FIG-CPNC-2025-P0161-001');
+          if (!figure) throw new Error('P0161 FIG001 missing');
+          if (figure.reconstruction?.render_contract !== 'normalized-2d-v1') throw new Error('render contract mismatch');
+          if (figure.reconstruction?.deterministic_required !== true) throw new Error('deterministic flag mismatch');
+          if (figure.reconstruction?.generative_image_allowed !== false) throw new Error('generative flag mismatch');
+          if (!Array.isArray(figure.measurements) || figure.measurements.length !== 0) throw new Error('measurements mismatch');
+          const expectedIds = ['ruler-body', 'imperial-scale', 'metric-scale', 'fraction-list'];
+          if (figure.entities?.length !== 4) throw new Error('entity count mismatch');
+          const entities = new Map(figure.entities.map((entity) => [entity.id, entity]));
+          for (const id of expectedIds) {
+            const entity = entities.get(id);
+            if (!entity) throw new Error(`missing entity ${id}`);
+            if (entity.geometry?.primitive !== 'rect' || entity.geometry?.precision !== 'approximate') throw new Error(`geometry mismatch ${id}`);
+          }
+          const labels = new Set(figure.annotations?.map((annotation) => annotation.text));
+          if (!labels.has('in') || !labels.has('cm') || !labels.has('1/8”, 1/4”, 5/16”, 3/8”, 1/2”, 5/8”, 3/4”, 7/8”, 1”') || labels.size !== 3) throw new Error('annotation semantics mismatch');
+          if (figure.layers?.flatMap((layer) => layer.entity_ids ?? []).length !== 4) throw new Error('entity layer coverage mismatch');
+          if (figure.layers?.flatMap((layer) => layer.annotation_ids ?? []).length !== 3) throw new Error('annotation layer coverage mismatch');
+          console.log(JSON.stringify({knowledge_version: manifest.knowledge_version, figure_id: figure.figure_id, render_contract: figure.reconstruction.render_contract, entities: figure.entities.length, annotations: figure.annotations.length, measurements: figure.measurements.length, layers: figure.layers.length}));
+          NODE
+
+      - name: Run PC tests
+        working-directory: pc
+        run: npm test
+
+      - name: Typecheck
+        working-directory: pc
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: pc
+        run: npm run build
+
+      - name: Audit dependencies
+        working-directory: pc
+        run: npm audit
