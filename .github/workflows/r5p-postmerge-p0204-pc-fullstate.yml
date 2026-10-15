@@ -1,0 +1,161 @@
+name: R5P P0204 PC Postmerge Full-State
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Knowledge merged main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompany-rgb/CarpiNova-Knowledge
+          ref: b49432b6163d50a2816cebf35638f55dace6ee00
+          path: knowledge
+
+      - name: Checkout exact PC main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompanyv2/CarpiNova-PC
+          ref: 0dfd1131ce01be2a4ed4b429ead2d4e214db1472
+          path: pc
+
+      - name: Verify immutable inputs
+        run: |
+          test "$(git -C knowledge rev-parse HEAD)" = "b49432b6163d50a2816cebf35638f55dace6ee00"
+          test "$(git -C pc rev-parse HEAD)" = "0dfd1131ce01be2a4ed4b429ead2d4e214db1472"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+
+      - name: Install Knowledge dependencies
+        working-directory: knowledge
+        run: uv sync --all-groups
+
+      - name: Install PC dependencies
+        working-directory: pc
+        run: npm ci
+
+      - name: Prepare exact Knowledge merged main
+        working-directory: pc
+        run: node scripts/prepare-knowledge.mjs --knowledge-root ../knowledge
+
+      - name: Verify installed P0204 FIG001 contract
+        working-directory: pc
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const manifest = JSON.parse(await readFile('generated/knowledge/manifest.json', 'utf8'));
+          const bundle = JSON.parse(await readFile('generated/knowledge/figures.bundle.json', 'utf8'));
+          if (manifest.knowledge_version !== '1.2.0') throw new Error('unexpected Knowledge version');
+          const figure = bundle.figures.find((item) => item.figure_id === 'FIG-CPNC-2025-P0204-001');
+          if (!figure) throw new Error('P0204 FIG001 missing');
+          if (figure.page_id !== 'PAGE-CPNC-2025-P0204') throw new Error('page id mismatch');
+          if (figure.type !== 'dimensioned_drawing') throw new Error('figure type mismatch');
+          if (figure.reconstruction?.render_contract !== 'normalized-2d-v1') throw new Error('render contract mismatch');
+          if (figure.reconstruction?.deterministic_required !== true) throw new Error('deterministic flag mismatch');
+          if (figure.reconstruction?.generative_image_allowed !== false) throw new Error('generative flag mismatch');
+
+          const expectedPrimitives = new Map([
+            ['stile', 'rect'],
+            ['closet-internal-overhead', 'rect'],
+            ['closet-external-overhead', 'rect'],
+            ['closet-body', 'rect'],
+          ]);
+          if (figure.entities?.length !== expectedPrimitives.size) throw new Error('entity count mismatch');
+          const entities = new Map(figure.entities.map((entity) => [entity.id, entity]));
+          const normalized = (value) => typeof value === 'number' && value >= 0 && value <= 1;
+          for (const [id, primitive] of expectedPrimitives) {
+            const entity = entities.get(id);
+            if (!entity) throw new Error(`missing entity ${id}`);
+            if (entity.geometry?.primitive !== primitive || entity.geometry?.precision !== 'approximate') throw new Error(`geometry contract mismatch ${id}`);
+            const bounds = entity.geometry?.bounds;
+            if (!bounds || !normalized(bounds.x) || !normalized(bounds.y) || typeof bounds.width !== 'number' || bounds.width <= 0 || typeof bounds.height !== 'number' || bounds.height <= 0 || bounds.x + bounds.width > 1 || bounds.y + bounds.height > 1) throw new Error(`bounds mismatch ${id}`);
+          }
+
+          const expectedMeasurements = [
+            'MEAS-CPNC-2025-P0204-001',
+            'MEAS-CPNC-2025-P0204-002',
+            'MEAS-CPNC-2025-P0204-003',
+            'MEAS-CPNC-2025-P0204-004',
+          ];
+          if (figure.measurements?.length !== expectedMeasurements.length || figure.measurements.some((value, index) => value !== expectedMeasurements[index])) throw new Error('measurement contract mismatch');
+
+          const expectedRelationships = [
+            ['stile', 'closet-internal-overhead', 'supports'],
+            ['closet-internal-overhead', 'closet-body', 'integrated_configuration'],
+            ['closet-external-overhead', 'closet-body', 'independent_configuration'],
+          ];
+          if (figure.relationships?.length !== expectedRelationships.length) throw new Error('relationship count mismatch');
+          for (let i = 0; i < expectedRelationships.length; i += 1) {
+            const [from, to, type] = expectedRelationships[i];
+            const rel = figure.relationships[i];
+            if (rel?.from !== from || rel?.to !== to || rel?.type !== type) throw new Error(`relationship mismatch ${i}`);
+          }
+
+          const expectedAnnotations = new Map([
+            ['stile', ['ann-stile', 'PARAL 190 cm x45cm']],
+            ['closet-internal-overhead', ['ann-internal-overhead', 'maletero interno']],
+            ['closet-external-overhead', ['ann-external-overhead', 'maletero independiente (externo)']],
+          ]);
+          if (figure.annotations?.length !== expectedAnnotations.size) throw new Error('annotation count mismatch');
+          for (const annotation of figure.annotations) {
+            const expected = expectedAnnotations.get(annotation.target_entity_id);
+            if (!expected) throw new Error(`unexpected annotation target ${annotation.target_entity_id}`);
+            const [expectedId, expectedText] = expected;
+            if (annotation.id !== expectedId || annotation.text !== expectedText) throw new Error(`annotation semantics mismatch ${annotation.target_entity_id}`);
+            if (annotation.placement?.precision !== 'approximate' || !normalized(annotation.placement?.x) || !normalized(annotation.placement?.y)) throw new Error(`annotation placement mismatch ${annotation.target_entity_id}`);
+          }
+
+          const expectedLayers = [
+            ['closet-reference', 10, ['closet-body', 'stile'], []],
+            ['overhead-configurations', 20, ['closet-internal-overhead', 'closet-external-overhead'], []],
+            ['labels', 30, [], ['ann-stile', 'ann-internal-overhead', 'ann-external-overhead']],
+          ];
+          if (figure.layers?.length !== expectedLayers.length) throw new Error('layer count mismatch');
+          for (let i = 0; i < expectedLayers.length; i += 1) {
+            const [id, order, entityIds, annotationIds] = expectedLayers[i];
+            const layer = figure.layers[i];
+            if (layer?.id !== id || layer?.order !== order) throw new Error(`layer identity mismatch ${i}`);
+            const actualEntities = layer?.entity_ids ?? [];
+            const actualAnnotations = layer?.annotation_ids ?? [];
+            if (actualEntities.length !== entityIds.length || actualEntities.some((value, index) => value !== entityIds[index])) throw new Error(`layer entity refs mismatch ${id}`);
+            if (actualAnnotations.length !== annotationIds.length || actualAnnotations.some((value, index) => value !== annotationIds[index])) throw new Error(`layer annotation refs mismatch ${id}`);
+          }
+
+          if (figure.camera?.coordinate_space !== 'normalized_figure') throw new Error('camera mismatch');
+          const viewport = figure.camera?.viewport;
+          if (!viewport || viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1) throw new Error('viewport mismatch');
+
+          console.log(JSON.stringify({knowledge_version: manifest.knowledge_version, figure_id: figure.figure_id, render_contract: figure.reconstruction.render_contract, entities: figure.entities.length, annotations: figure.annotations.length, measurements: figure.measurements.length, relationships: figure.relationships.length, layers: figure.layers.length}));
+          NODE
+
+      - name: Run PC tests
+        working-directory: pc
+        run: npm test
+
+      - name: Typecheck
+        working-directory: pc
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: pc
+        run: npm run build
+
+      - name: Audit dependencies
+        working-directory: pc
+        run: npm audit
