@@ -1,0 +1,114 @@
+name: R5I P0159 FIG001 PC Compatibility
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Knowledge candidate
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompany-rgb/CarpiNova-Knowledge
+          ref: 86a7c5039210b752238972a7779151ea3d5caa0d
+          path: knowledge
+
+      - name: Checkout exact PC main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompanyv2/CarpiNova-PC
+          ref: 8996b9b874119de007347f10f003dbeea8aaf742
+          path: pc
+
+      - name: Verify immutable inputs
+        run: |
+          test "$(git -C knowledge rev-parse HEAD)" = "86a7c5039210b752238972a7779151ea3d5caa0d"
+          test "$(git -C pc rev-parse HEAD)" = "8996b9b874119de007347f10f003dbeea8aaf742"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+
+      - name: Install Knowledge dependencies
+        working-directory: knowledge
+        run: uv sync --all-groups
+
+      - name: Install PC dependencies
+        working-directory: pc
+        run: npm ci
+
+      - name: Prepare exact candidate Knowledge
+        working-directory: pc
+        run: node scripts/prepare-knowledge.mjs --knowledge-root ../knowledge
+
+      - name: Verify installed P0159 FIG001 render contract
+        working-directory: pc
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const manifest = JSON.parse(await readFile('generated/knowledge/manifest.json', 'utf8'));
+          const figuresBundle = JSON.parse(await readFile('generated/knowledge/figures.bundle.json', 'utf8'));
+          if (manifest.knowledge_version !== '1.2.0') throw new Error('unexpected Knowledge version');
+          const figure = figuresBundle.figures.find((item) => item.figure_id === 'FIG-CPNC-2025-P0159-001');
+          if (!figure) throw new Error('P0159 FIG001 missing');
+          if (figure.reconstruction?.render_contract !== 'normalized-2d-v1') throw new Error('P0159 FIG001 render contract missing');
+          if (figure.reconstruction?.deterministic_required !== true) throw new Error('P0159 FIG001 must remain deterministic');
+          if (figure.reconstruction?.generative_image_allowed !== false) throw new Error('P0159 FIG001 must remain non-generative');
+          if (JSON.stringify(figure.measurements) !== JSON.stringify([])) throw new Error('P0159 FIG001 must have zero measurements');
+          const expectedBounds = {
+            'longitudinal-scene': {x: 0, y: 0, width: 1, height: 0.46},
+            'transverse-scene': {x: 0, y: 0.52, width: 1, height: 0.46},
+          };
+          if (figure.entities?.length !== 2) throw new Error('unexpected P0159 FIG001 entity count');
+          for (const entity of figure.entities) {
+            const expected = expectedBounds[entity.id];
+            if (!expected) throw new Error(`unexpected P0159 FIG001 entity ${entity.id}`);
+            if (entity.geometry?.primitive !== 'rect' || entity.geometry?.precision !== 'approximate') throw new Error(`P0159 FIG001 geometry contract mismatch for ${entity.id}`);
+            if (JSON.stringify(entity.geometry.bounds) !== JSON.stringify(expected)) throw new Error(`P0159 FIG001 bounds mismatch for ${entity.id}`);
+          }
+          const expectedAnnotations = new Map([
+            ['ann-longitudinal', ['longitudinal-scene', 'Corte longitudinal']],
+            ['ann-transverse', ['transverse-scene', 'Corte transversal']],
+          ]);
+          if (figure.annotations?.length !== 2) throw new Error('unexpected P0159 FIG001 annotation count');
+          for (const annotation of figure.annotations) {
+            const expected = expectedAnnotations.get(annotation.id);
+            if (!expected) throw new Error(`unexpected annotation ${annotation.id}`);
+            if (annotation.target_entity_id !== expected[0] || annotation.text !== expected[1]) throw new Error(`annotation semantics mismatch for ${annotation.id}`);
+            if (annotation.placement?.precision !== 'approximate') throw new Error(`annotation placement precision missing for ${annotation.id}`);
+          }
+          const entityRefs = figure.layers.flatMap((layer) => layer.entity_ids ?? []);
+          const annotationRefs = figure.layers.flatMap((layer) => layer.annotation_ids ?? []);
+          if (entityRefs.length !== 2 || new Set(entityRefs).size !== 2) throw new Error('P0159 FIG001 entity layer refs must be unique');
+          if (annotationRefs.length !== 2 || new Set(annotationRefs).size !== 2) throw new Error('P0159 FIG001 annotation layer refs must be unique');
+          console.log(JSON.stringify({knowledge_version: manifest.knowledge_version, figure_id: figure.figure_id, render_contract: figure.reconstruction.render_contract, entities: figure.entities.length, annotations: figure.annotations.length, measurements: figure.measurements.length, layers: figure.layers.length}));
+          NODE
+
+      - name: Run PC tests
+        working-directory: pc
+        run: npm test
+
+      - name: Typecheck
+        working-directory: pc
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: pc
+        run: npm run build
+
+      - name: Audit dependencies
+        working-directory: pc
+        run: npm audit
