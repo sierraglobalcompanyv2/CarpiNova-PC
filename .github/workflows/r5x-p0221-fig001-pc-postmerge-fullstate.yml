@@ -1,0 +1,189 @@
+name: R5X P0221 FIG001 PC Postmerge Full-State Proof
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Knowledge merged main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompany-rgb/CarpiNova-Knowledge
+          ref: e321295d75352385c609bf33f5a4c7760964eac1
+          path: knowledge
+
+      - name: Checkout exact PC main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompanyv2/CarpiNova-PC
+          ref: 0dfd1131ce01be2a4ed4b429ead2d4e214db1472
+          path: pc
+
+      - name: Verify immutable inputs
+        run: |
+          test "$(git -C knowledge rev-parse HEAD)" = "e321295d75352385c609bf33f5a4c7760964eac1"
+          test "$(git -C pc rev-parse HEAD)" = "0dfd1131ce01be2a4ed4b429ead2d4e214db1472"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+
+      - name: Install Knowledge dependencies
+        working-directory: knowledge
+        run: uv sync --all-groups
+
+      - name: Install PC dependencies
+        working-directory: pc
+        run: npm ci
+
+      - name: Prepare exact merged Knowledge
+        working-directory: pc
+        run: node scripts/prepare-knowledge.mjs --knowledge-root ../knowledge
+
+      - name: Verify installed P0221 FIG001 contract and full-state bundle
+        working-directory: pc
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+
+          const manifest = JSON.parse(await readFile('generated/knowledge/manifest.json', 'utf8'));
+          const bundle = JSON.parse(await readFile('generated/knowledge/figures.bundle.json', 'utf8'));
+          if (!manifest.knowledge_version) throw new Error('Knowledge version missing');
+          if (!Array.isArray(bundle.figures) || bundle.figures.length === 0) throw new Error('full figures bundle missing');
+
+          const figure = bundle.figures.find((item) => item.figure_id === 'FIG-CPNC-2025-P0221-001');
+          if (!figure) throw new Error('P0221 FIG001 missing');
+          if (figure.page_id !== 'PAGE-CPNC-2025-P0221') throw new Error('page id mismatch');
+          if (figure.type !== 'technical_diagram') throw new Error('figure type mismatch');
+          if (figure.source?.pdf_page !== 221 || figure.source?.printed_page !== 199) throw new Error('source page mismatch');
+          if (figure.reconstruction?.render_contract !== 'normalized-2d-v1') throw new Error('render contract mismatch');
+          if (figure.reconstruction?.preferred_renderer !== 'svg') throw new Error('renderer mismatch');
+          if (figure.reconstruction?.deterministic_required !== true) throw new Error('deterministic flag mismatch');
+          if (figure.reconstruction?.generative_image_allowed !== false) throw new Error('generative flag mismatch');
+
+          const normalized = (value) => typeof value === 'number' && value >= 0 && value <= 1;
+          const expectedEntities = new Map([
+            ['lateral-B', ['bed_frame_side_B', 'polyline']],
+            ['female-pivot', ['female_pivot', 'rect']],
+            ['lower-gas-plate', ['lower_ball_joint_plate_for_gas_spring', 'rect']],
+            ['wood-leg-support', ['wood_leg_support', 'rect']],
+          ]);
+          if (figure.entities?.length !== expectedEntities.size) throw new Error('entity count mismatch');
+          for (const entity of figure.entities) {
+            const expected = expectedEntities.get(entity.id);
+            if (!expected) throw new Error(`unexpected entity ${entity.id}`);
+            const [type, primitive] = expected;
+            if (entity.type !== type) throw new Error(`entity type mismatch ${entity.id}`);
+            const geometry = entity.geometry;
+            if (geometry?.precision !== 'approximate' || geometry?.primitive !== primitive) throw new Error(`geometry contract mismatch ${entity.id}`);
+            if ('dimensions' in geometry || 'bbox' in geometry) throw new Error(`metric inference field present ${entity.id}`);
+            if (primitive === 'rect') {
+              const b = geometry.bounds;
+              if (!b || !normalized(b.x) || !normalized(b.y) || typeof b.width !== 'number' || b.width <= 0 || typeof b.height !== 'number' || b.height <= 0 || b.x + b.width > 1 || b.y + b.height > 1) throw new Error(`bounds mismatch ${entity.id}`);
+            } else {
+              if (!Array.isArray(geometry.points) || geometry.points.length < 5) throw new Error(`polyline mismatch ${entity.id}`);
+              for (const point of geometry.points) {
+                if (!normalized(point?.x) || !normalized(point?.y)) throw new Error(`point outside viewport ${entity.id}`);
+              }
+              const first = geometry.points[0];
+              const last = geometry.points.at(-1);
+              if (first.x !== last.x || first.y !== last.y) throw new Error('lateral-B polyline must be closed');
+            }
+          }
+
+          if (!Array.isArray(figure.measurements) || figure.measurements.length !== 0) throw new Error('FIG001 must remain measurement-free');
+
+          const expectedRelationships = [
+            ['female-pivot', 'lateral-B', 'mounted_on'],
+            ['lower-gas-plate', 'lateral-B', 'mounted_on'],
+            ['wood-leg-support', 'lateral-B', 'positioned_on'],
+          ];
+          if (figure.relationships?.length !== expectedRelationships.length) throw new Error('relationship count mismatch');
+          for (let i = 0; i < expectedRelationships.length; i += 1) {
+            const [from, to, type] = expectedRelationships[i];
+            const rel = figure.relationships[i];
+            if (rel?.from !== from || rel?.to !== to || rel?.type !== type) throw new Error(`relationship mismatch ${i}`);
+          }
+
+          const expectedAnnotations = new Map([
+            ['ann-female-pivot', ['female-pivot', 'Posición de pivote hembra']],
+            ['ann-lower-gas-plate', ['lower-gas-plate', 'Platina inferior con rótula para el gato (pistón)']],
+            ['ann-wood-leg-support', ['wood-leg-support', 'Soporte pata de madera']],
+          ]);
+          if (figure.annotations?.length !== expectedAnnotations.size) throw new Error('annotation count mismatch');
+          for (const annotation of figure.annotations) {
+            const expected = expectedAnnotations.get(annotation.id);
+            if (!expected) throw new Error(`unexpected annotation ${annotation.id}`);
+            const [target, text] = expected;
+            if (annotation.target_entity_id !== target || annotation.text !== text) throw new Error(`annotation semantics mismatch ${annotation.id}`);
+            if (annotation.placement?.precision !== 'approximate' || !normalized(annotation.placement?.x) || !normalized(annotation.placement?.y)) throw new Error(`annotation placement mismatch ${annotation.id}`);
+          }
+
+          const expectedLayers = [
+            ['geometry', 10, ['lateral-B', 'female-pivot', 'lower-gas-plate', 'wood-leg-support'], []],
+            ['labels', 20, [], ['ann-female-pivot', 'ann-lower-gas-plate', 'ann-wood-leg-support']],
+          ];
+          if (figure.layers?.length !== expectedLayers.length) throw new Error('layer count mismatch');
+          for (let i = 0; i < expectedLayers.length; i += 1) {
+            const [id, order, entityIds, annotationIds] = expectedLayers[i];
+            const layer = figure.layers[i];
+            if (layer?.id !== id || layer?.order !== order) throw new Error(`layer identity mismatch ${i}`);
+            if (JSON.stringify(layer.entity_ids ?? []) !== JSON.stringify(entityIds)) throw new Error(`layer entity refs mismatch ${id}`);
+            if (JSON.stringify(layer.annotation_ids ?? []) !== JSON.stringify(annotationIds)) throw new Error(`layer annotation refs mismatch ${id}`);
+          }
+
+          if (figure.camera?.coordinate_space !== 'normalized_figure') throw new Error('camera mismatch');
+          const viewport = figure.camera?.viewport;
+          if (!viewport || viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1) throw new Error('viewport mismatch');
+
+          const semanticText = `${figure.review?.notes ?? ''} ${figure.accessibility?.summary ?? ''}`.toLowerCase();
+          for (const required of ['posición relativa', 'no métrica', 'no es un dibujo de fabricación', 'escala física']) {
+            if (!semanticText.includes(required)) throw new Error(`source/non-metric guardrail missing: ${required}`);
+          }
+          const serialized = JSON.stringify(figure).toLowerCase();
+          for (const forbidden of ['18 mm', '25 mm', '23 cm', '4.8 cm']) {
+            if (serialized.includes(forbidden)) throw new Error(`FIG002 measurement leaked into FIG001: ${forbidden}`);
+          }
+
+          console.log(JSON.stringify({
+            knowledge_version: manifest.knowledge_version,
+            total_figures: bundle.figures.length,
+            figure_id: figure.figure_id,
+            render_contract: figure.reconstruction.render_contract,
+            entities: figure.entities.length,
+            annotations: figure.annotations.length,
+            measurements: figure.measurements.length,
+            relationships: figure.relationships.length,
+            layers: figure.layers.length,
+          }));
+          NODE
+
+      - name: Run PC tests
+        working-directory: pc
+        run: npm test
+
+      - name: Typecheck
+        working-directory: pc
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: pc
+        run: npm run build
+
+      - name: Audit dependencies
+        working-directory: pc
+        run: npm audit
