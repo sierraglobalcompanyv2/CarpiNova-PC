@@ -1,0 +1,186 @@
+name: R5T P0209 PC Postmerge Proof
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact merged Knowledge
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompany-rgb/CarpiNova-Knowledge
+          ref: f5a324a68a488955d4cf5c5e44fb45bdfa23ff5c
+          path: knowledge
+
+      - name: Checkout exact PC main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompanyv2/CarpiNova-PC
+          ref: 0dfd1131ce01be2a4ed4b429ead2d4e214db1472
+          path: pc
+
+      - name: Verify immutable inputs
+        run: |
+          test "$(git -C knowledge rev-parse HEAD)" = "f5a324a68a488955d4cf5c5e44fb45bdfa23ff5c"
+          test "$(git -C pc rev-parse HEAD)" = "0dfd1131ce01be2a4ed4b429ead2d4e214db1472"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+
+      - name: Install Knowledge dependencies
+        working-directory: knowledge
+        run: uv sync --all-groups
+
+      - name: Install PC dependencies
+        working-directory: pc
+        run: npm ci
+
+      - name: Prepare exact merged Knowledge
+        working-directory: pc
+        run: node scripts/prepare-knowledge.mjs --knowledge-root ../knowledge
+
+      - name: Verify installed P0209 FIG001 contract
+        working-directory: pc
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+
+          const manifest = JSON.parse(await readFile('generated/knowledge/manifest.json', 'utf8'));
+          const bundle = JSON.parse(await readFile('generated/knowledge/figures.bundle.json', 'utf8'));
+          if (!manifest.knowledge_version) throw new Error('Knowledge version missing');
+
+          const figure = bundle.figures.find((item) => item.figure_id === 'FIG-CPNC-2025-P0209-001');
+          if (!figure) throw new Error('P0209 FIG001 missing');
+          if (figure.page_id !== 'PAGE-CPNC-2025-P0209') throw new Error('page id mismatch');
+          if (figure.type !== 'dimensioned_drawing') throw new Error('figure type mismatch');
+          if (figure.source?.pdf_page !== 209 || figure.source?.printed_page !== 187) throw new Error('source page mismatch');
+          if (figure.reconstruction?.render_contract !== 'normalized-2d-v1') throw new Error('render contract mismatch');
+          if (figure.reconstruction?.deterministic_required !== true) throw new Error('deterministic flag mismatch');
+          if (figure.reconstruction?.generative_image_allowed !== false) throw new Error('generative flag mismatch');
+
+          const normalized = (value) => typeof value === 'number' && value >= 0 && value <= 1;
+          const expectedEntities = new Map([
+            ['frame', ['door_frame', 'polyline']],
+            ['stop', ['door_frame_stop_carga', 'rect']],
+            ['trim', ['door_trim_tapaluz', 'polyline']],
+            ['door-leaf', ['door_leaf', 'rect']],
+          ]);
+          if (figure.entities?.length !== expectedEntities.size) throw new Error('entity count mismatch');
+          const entities = new Map(figure.entities.map((entity) => [entity.id, entity]));
+          for (const [id, [type, primitive]] of expectedEntities) {
+            const entity = entities.get(id);
+            if (!entity) throw new Error(`missing entity ${id}`);
+            if (entity.type !== type) throw new Error(`entity type mismatch ${id}`);
+            if (entity.geometry?.primitive !== primitive || entity.geometry?.precision !== 'approximate') throw new Error(`geometry contract mismatch ${id}`);
+            if ('dimensions' in entity.geometry || 'bbox' in entity.geometry) throw new Error(`metric inference field present ${id}`);
+            if (primitive === 'rect') {
+              const b = entity.geometry?.bounds;
+              if (!b || !normalized(b.x) || !normalized(b.y) || typeof b.width !== 'number' || b.width <= 0 || typeof b.height !== 'number' || b.height <= 0 || b.x + b.width > 1 || b.y + b.height > 1) throw new Error(`bounds mismatch ${id}`);
+            } else {
+              const points = entity.geometry?.points;
+              if (!Array.isArray(points) || points.length < 2 || points.some((p) => !normalized(p.x) || !normalized(p.y))) throw new Error(`polyline mismatch ${id}`);
+            }
+          }
+
+          const expectedMeasurements = [
+            'MEAS-CPNC-2025-P0209-001',
+            'MEAS-CPNC-2025-P0209-002',
+            'MEAS-CPNC-2025-P0209-003',
+            'MEAS-CPNC-2025-P0209-004',
+            'MEAS-CPNC-2025-P0209-005',
+            'MEAS-CPNC-2025-P0209-006',
+            'MEAS-CPNC-2025-P0209-007',
+          ];
+          if (JSON.stringify(figure.measurements) !== JSON.stringify(expectedMeasurements)) throw new Error('measurement contract mismatch');
+          if (figure.measurements.some((id) => id.startsWith('MEAS-CPNC-2025-P0208-'))) throw new Error('P0208 measurement duplicated locally');
+
+          const expectedRelationships = [
+            ['stop', 'frame', 'part_of'],
+            ['trim', 'frame', 'covers_perimeter_gap'],
+            ['door-leaf', 'stop', 'closes_against'],
+          ];
+          if (figure.relationships?.length !== expectedRelationships.length) throw new Error('relationship count mismatch');
+          for (let i = 0; i < expectedRelationships.length; i += 1) {
+            const [from, to, type] = expectedRelationships[i];
+            const rel = figure.relationships[i];
+            if (rel?.from !== from || rel?.to !== to || rel?.type !== type) throw new Error(`relationship mismatch ${i}`);
+          }
+
+          const expectedAnnotations = new Map([
+            ['ann-frame-widths', ['frame', 'Anchos listados: 8, 10, 12 o 14 cm']],
+            ['ann-stop-width', ['stop', 'Carga: 4 cm']],
+            ['ann-trim-width', ['trim', 'Moldura/tapaluz: normalmente 3 cm']],
+          ]);
+          if (figure.annotations?.length !== expectedAnnotations.size) throw new Error('annotation count mismatch');
+          for (const annotation of figure.annotations) {
+            const expected = expectedAnnotations.get(annotation.id);
+            if (!expected) throw new Error(`unexpected annotation ${annotation.id}`);
+            const [target, text] = expected;
+            if (annotation.target_entity_id !== target || annotation.text !== text) throw new Error(`annotation semantics mismatch ${annotation.id}`);
+            if (annotation.placement?.precision !== 'approximate' || !normalized(annotation.placement?.x) || !normalized(annotation.placement?.y)) throw new Error(`annotation placement mismatch ${annotation.id}`);
+            if ('measurement_id' in annotation) throw new Error(`unexpected measurement binding ${annotation.id}`);
+          }
+
+          const expectedLayers = [
+            ['geometry', 10, ['frame', 'stop', 'trim', 'door-leaf'], []],
+            ['labels', 20, [], ['ann-frame-widths', 'ann-stop-width', 'ann-trim-width']],
+          ];
+          if (figure.layers?.length !== expectedLayers.length) throw new Error('layer count mismatch');
+          for (let i = 0; i < expectedLayers.length; i += 1) {
+            const [id, order, entityIds, annotationIds] = expectedLayers[i];
+            const layer = figure.layers[i];
+            if (layer?.id !== id || layer?.order !== order) throw new Error(`layer identity mismatch ${i}`);
+            if (JSON.stringify(layer.entity_ids ?? []) !== JSON.stringify(entityIds)) throw new Error(`layer entity refs mismatch ${id}`);
+            if (JSON.stringify(layer.annotation_ids ?? []) !== JSON.stringify(annotationIds)) throw new Error(`layer annotation refs mismatch ${id}`);
+          }
+
+          if (figure.camera?.coordinate_space !== 'normalized_figure') throw new Error('camera mismatch');
+          const viewport = figure.camera?.viewport;
+          if (!viewport || viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1) throw new Error('viewport mismatch');
+
+          const notes = figure.review?.notes ?? '';
+          if (!notes.includes('no codifica escala física')) throw new Error('non-metric guardrail missing');
+          if (!notes.includes('36 mm') || !notes.includes('P0208') || !notes.includes('no se duplica')) throw new Error('36mm canonical guardrail missing');
+
+          console.log(JSON.stringify({
+            knowledge_version: manifest.knowledge_version,
+            figure_id: figure.figure_id,
+            render_contract: figure.reconstruction.render_contract,
+            entities: figure.entities.length,
+            annotations: figure.annotations.length,
+            measurements: figure.measurements.length,
+            relationships: figure.relationships.length,
+            layers: figure.layers.length,
+          }));
+          NODE
+
+      - name: Run PC tests
+        working-directory: pc
+        run: npm test
+
+      - name: Typecheck
+        working-directory: pc
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: pc
+        run: npm run build
+
+      - name: Audit dependencies
+        working-directory: pc
+        run: npm audit
