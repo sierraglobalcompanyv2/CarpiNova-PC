@@ -143,8 +143,9 @@ jobs:
           if (figure.camera?.coordinate_space !== 'normalized_figure') throw new Error('camera mismatch');
           const viewport = figure.camera?.viewport;
           if (!viewport || viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1) throw new Error('viewport mismatch');
-          if (!figure.review?.notes?.includes('no codifica escala física')) throw new Error('non-metric guardrail missing');
-          if (!figure.review?.notes?.includes('no convierte la cota de 3 cm en ancho, alto o profundidad')) throw new Error('3 cm orientation guardrail missing');
+          const notes = figure.review?.notes ?? '';
+          if (!notes.includes('no codifica escala física')) throw new Error('non-metric guardrail missing');
+          if (!notes.includes('cota de 3 cm') || !notes.includes('ancho, alto o profundidad')) throw new Error('3 cm orientation guardrail missing');
 
           console.log(JSON.stringify({
             knowledge_version: manifest.knowledge_version,
