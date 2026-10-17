@@ -1,0 +1,189 @@
+name: P0228 FIG001 PC Premerge Proof
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Knowledge GREEN
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompany-rgb/CarpiNova-Knowledge
+          ref: fd62ddacc372d1668ba733d575c24887f373d0f1
+          path: knowledge
+
+      - name: Checkout exact PC main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompanyv2/CarpiNova-PC
+          ref: 2f84734a0fc92ad82d4ce1cb5b664ae2b082f134
+          path: pc
+
+      - name: Verify immutable inputs
+        run: |
+          test "$(git -C knowledge rev-parse HEAD)" = "fd62ddacc372d1668ba733d575c24887f373d0f1"
+          test "$(git -C pc rev-parse HEAD)" = "2f84734a0fc92ad82d4ce1cb5b664ae2b082f134"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+
+      - name: Install Knowledge dependencies
+        working-directory: knowledge
+        run: uv sync --all-groups
+
+      - name: Install PC dependencies
+        working-directory: pc
+        run: npm ci
+
+      - name: Prepare exact GREEN Knowledge
+        working-directory: pc
+        run: node scripts/prepare-knowledge.mjs --knowledge-root ../knowledge
+
+      - name: Verify installed P0228 FIG001 contract and source guardrails
+        working-directory: pc
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+
+          const manifest = JSON.parse(await readFile('generated/knowledge/manifest.json', 'utf8'));
+          const bundle = JSON.parse(await readFile('generated/knowledge/figures.bundle.json', 'utf8'));
+          if (!manifest.knowledge_version) throw new Error('Knowledge version missing');
+          if (!Array.isArray(bundle.figures) || bundle.figures.length === 0) throw new Error('full figures bundle missing');
+
+          const figure = bundle.figures.find((item) => item.figure_id === 'FIG-CPNC-2025-P0228-001');
+          if (!figure) throw new Error('P0228 FIG001 missing');
+          if (figure.page_id !== 'PAGE-CPNC-2025-P0228') throw new Error('page id mismatch');
+          if (figure.type !== 'mixed') throw new Error('figure type mismatch');
+          if (figure.source?.pdf_page !== 228 || figure.source?.printed_page !== 206) throw new Error('source page mismatch');
+          if (figure.source?.extraction?.review_status !== 'VISUALLY_VERIFIED') throw new Error('source review status mismatch');
+          if (figure.review?.status !== 'VISUALLY_VERIFIED') throw new Error('figure review status mismatch');
+          if (figure.reconstruction?.render_contract !== 'normalized-2d-v1') throw new Error('render contract mismatch');
+          if (figure.reconstruction?.preferred_renderer !== 'svg') throw new Error('renderer mismatch');
+          if (figure.reconstruction?.deterministic_required !== true) throw new Error('deterministic flag mismatch');
+          if (figure.reconstruction?.generative_image_allowed !== false) throw new Error('generative flag mismatch');
+
+          const normalized = (value) => typeof value === 'number' && value >= 0 && value <= 1;
+          const expectedEntities = new Map([
+            ['stair-profile', 'stair_side_profile'],
+            ['formula-box', 'stair_formula_reference'],
+            ['low-traffic-pair', 'tread_riser_reference_low_traffic'],
+            ['comfort-pair', 'tread_riser_reference_maximum_comfort'],
+            ['exterior-pair', 'tread_riser_reference_exterior'],
+            ['horizontal-step', 'horizontal_step_length_reference'],
+          ]);
+          if (figure.entities?.length !== expectedEntities.size) throw new Error('entity count mismatch');
+          for (const entity of figure.entities) {
+            const type = expectedEntities.get(entity.id);
+            if (!type || entity.type !== type) throw new Error(`entity mismatch ${entity.id}`);
+            const geometry = entity.geometry;
+            if (geometry?.precision !== 'approximate' || geometry?.primitive !== 'rect') throw new Error(`geometry contract mismatch ${entity.id}`);
+            if ('dimensions' in geometry || 'bbox' in geometry) throw new Error(`metric inference field present ${entity.id}`);
+            const b = geometry.bounds;
+            if (!b || !normalized(b.x) || !normalized(b.y) || typeof b.width !== 'number' || b.width <= 0 || typeof b.height !== 'number' || b.height <= 0 || b.x + b.width > 1 || b.y + b.height > 1) throw new Error(`bounds mismatch ${entity.id}`);
+          }
+
+          if (!Array.isArray(figure.measurements) || figure.measurements.length !== 0) throw new Error('measurements must remain empty');
+          if ('educational_sequence' in figure) throw new Error('educational_sequence must remain absent');
+
+          const expectedRelationships = [
+            ['low-traffic-pair', 'stair-profile', 'annotates'],
+            ['comfort-pair', 'stair-profile', 'annotates'],
+            ['exterior-pair', 'stair-profile', 'annotates'],
+            ['horizontal-step', 'stair-profile', 'annotates'],
+          ];
+          if (figure.relationships?.length !== expectedRelationships.length) throw new Error('relationship count mismatch');
+          for (let i = 0; i < expectedRelationships.length; i += 1) {
+            const [from, to, type] = expectedRelationships[i];
+            const rel = figure.relationships[i];
+            if (rel?.from !== from || rel?.to !== to || rel?.type !== type) throw new Error(`relationship mismatch ${i}`);
+          }
+
+          const expectedAnnotations = new Map([
+            ['ann-formula-box', ['formula-box', 'La fuente imprime literalmente: 2 contrahuellas + 1 huella = 0.63cm; puede variar de 0.61 a 0.65']],
+            ['ann-low-traffic-pair', ['low-traffic-pair', 'Huella 0.21; contrahuella 0.21; lugares poco transitados']],
+            ['ann-comfort-pair', ['comfort-pair', 'Huella 0.29; contrahuella 0.17; máxima comodidad']],
+            ['ann-exterior-pair', ['exterior-pair', 'Escaleras exteriores: huella 0.39; contrahuella 0.12; anotación superior pequeña no normalizada']],
+            ['ann-horizontal-step', ['horizontal-step', '.63 Longitud Horizontal de un paso']],
+          ]);
+          if (figure.annotations?.length !== expectedAnnotations.size) throw new Error('annotation count mismatch');
+          for (const annotation of figure.annotations) {
+            const expected = expectedAnnotations.get(annotation.id);
+            if (!expected) throw new Error(`unexpected annotation ${annotation.id}`);
+            const [target, text] = expected;
+            if (annotation.target_entity_id !== target || annotation.text !== text) throw new Error(`annotation semantics mismatch ${annotation.id}`);
+            if (annotation.placement?.precision !== 'approximate' || !normalized(annotation.placement?.x) || !normalized(annotation.placement?.y)) throw new Error(`annotation placement mismatch ${annotation.id}`);
+          }
+
+          const expectedLayers = [
+            ['geometry', 10, [...expectedEntities.keys()], []],
+            ['labels', 20, [], [...expectedAnnotations.keys()]],
+          ];
+          if (figure.layers?.length !== 2) throw new Error('layer count mismatch');
+          for (let i = 0; i < expectedLayers.length; i += 1) {
+            const [id, order, entityIds, annotationIds] = expectedLayers[i];
+            const layer = figure.layers[i];
+            if (layer?.id !== id || layer?.order !== order) throw new Error(`layer identity mismatch ${i}`);
+            if (JSON.stringify(layer.entity_ids ?? []) !== JSON.stringify(entityIds)) throw new Error(`layer entity refs mismatch ${id}`);
+            if (JSON.stringify(layer.annotation_ids ?? []) !== JSON.stringify(annotationIds)) throw new Error(`layer annotation refs mismatch ${id}`);
+          }
+
+          if (figure.camera?.coordinate_space !== 'normalized_figure') throw new Error('camera mismatch');
+          const viewport = figure.camera?.viewport;
+          if (!viewport || viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1) throw new Error('viewport mismatch');
+
+          const summary = String(figure.accessibility?.summary ?? '');
+          const notes = String(figure.review?.notes ?? '');
+          if (!summary.includes('0.63cm') || !summary.includes('sin corregir su unidad')) throw new Error('literal formula/unit guardrail missing');
+          if (!summary.includes('no métrica') || !summary.includes('no está a escala')) throw new Error('non-metric/not-to-scale guardrail missing');
+          if (!summary.includes('no presenta estas referencias como código o norma de construcción')) throw new Error('code guardrail missing');
+          if (!summary.includes('calcular escaleras') || !summary.includes('diseño estructural') || !summary.includes('certificación de seguridad') || !summary.includes('plano de fabricación') || !summary.includes('plantilla de obra')) throw new Error('safety/construction guardrails missing');
+          if (!summary.includes('anotación superior pequeña') || !summary.includes('sin normalizar')) throw new Error('unresolved exterior annotation guardrail missing');
+          for (const value of ['0.61', '0.65', '0.21', '0.29', '0.17', '0.39', '0.12', '.63']) {
+            if (!notes.includes(value)) throw new Error(`unresolved source value missing: ${value}`);
+          }
+          if (!notes.includes('no se asignan unidades') || !notes.includes('No se derivan pendiente') || !notes.includes('cálculo constructivo')) throw new Error('derivation/unit guardrails missing');
+          if (!notes.includes('No se importan valores ni afirmaciones de páginas vecinas')) throw new Error('neighbor-page guardrail missing');
+
+          console.log(JSON.stringify({
+            knowledge_version: manifest.knowledge_version,
+            total_figures: bundle.figures.length,
+            figure_id: figure.figure_id,
+            render_contract: figure.reconstruction.render_contract,
+            entities: figure.entities.length,
+            annotations: figure.annotations.length,
+            measurements: figure.measurements.length,
+            relationships: figure.relationships.length,
+            layers: figure.layers.length,
+          }));
+          NODE
+
+      - name: Run PC tests
+        working-directory: pc
+        run: npm test
+
+      - name: Typecheck
+        working-directory: pc
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: pc
+        run: npm run build
+
+      - name: Audit dependencies
+        working-directory: pc
+        run: npm audit
