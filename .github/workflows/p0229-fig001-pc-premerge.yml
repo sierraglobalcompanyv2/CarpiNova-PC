@@ -1,0 +1,194 @@
+name: P0229 FIG001 PC Premerge Proof
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Knowledge GREEN
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompany-rgb/CarpiNova-Knowledge
+          ref: 5a2228008fe7936cf9bd00bf5a75d0dfc4583956
+          path: knowledge
+
+      - name: Checkout exact PC main
+        uses: actions/checkout@v7
+        with:
+          repository: sierraglobalcompanyv2/CarpiNova-PC
+          ref: 2f84734a0fc92ad82d4ce1cb5b664ae2b082f134
+          path: pc
+
+      - name: Verify immutable inputs
+        run: |
+          test "$(git -C knowledge rev-parse HEAD)" = "5a2228008fe7936cf9bd00bf5a75d0dfc4583956"
+          test "$(git -C pc rev-parse HEAD)" = "2f84734a0fc92ad82d4ce1cb5b664ae2b082f134"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+
+      - name: Install Knowledge dependencies
+        working-directory: knowledge
+        run: uv sync --all-groups
+
+      - name: Install PC dependencies
+        working-directory: pc
+        run: npm ci
+
+      - name: Prepare exact GREEN Knowledge
+        working-directory: pc
+        run: node scripts/prepare-knowledge.mjs --knowledge-root ../knowledge
+
+      - name: Verify installed P0229 FIG001 contract and QR guardrails
+        working-directory: pc
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+
+          const manifest = JSON.parse(await readFile('generated/knowledge/manifest.json', 'utf8'));
+          const bundle = JSON.parse(await readFile('generated/knowledge/figures.bundle.json', 'utf8'));
+          if (!manifest.knowledge_version) throw new Error('Knowledge version missing');
+          if (!Array.isArray(bundle.figures) || bundle.figures.length === 0) throw new Error('full figures bundle missing');
+
+          const figure = bundle.figures.find((item) => item.figure_id === 'FIG-CPNC-2025-P0229-001');
+          if (!figure) throw new Error('P0229 FIG001 missing');
+          if (figure.page_id !== 'PAGE-CPNC-2025-P0229') throw new Error('page id mismatch');
+          if (figure.type !== 'mixed') throw new Error('figure type mismatch');
+          if (figure.source?.pdf_page !== 229 || figure.source?.printed_page !== 207) throw new Error('source page mismatch');
+          if (figure.source?.extraction?.review_status !== 'VISUALLY_VERIFIED') throw new Error('source review status mismatch');
+          if (figure.review?.status !== 'VISUALLY_VERIFIED') throw new Error('figure review status mismatch');
+          if (figure.reconstruction?.render_contract !== 'normalized-2d-v1') throw new Error('render contract mismatch');
+          if (figure.reconstruction?.preferred_renderer !== 'svg') throw new Error('renderer mismatch');
+          if (figure.reconstruction?.deterministic_required !== true) throw new Error('deterministic flag mismatch');
+          if (figure.reconstruction?.generative_image_allowed !== false) throw new Error('generative flag mismatch');
+
+          const normalized = (value) => typeof value === 'number' && value >= 0 && value <= 1;
+          const expectedEntities = [
+            ['qr-01', 'qr_resource_placeholder', '¿Cómo estructurar una cocina?'],
+            ['qr-02', 'qr_resource_placeholder', '¿Cómo hacer una cocina?'],
+            ['qr-03', 'qr_resource_placeholder', 'Cocina y bisagras'],
+            ['qr-04', 'qr_resource_placeholder', 'Sistema T en frontal de cocina'],
+            ['qr-05', 'qr_resource_placeholder', 'Medidas estándar de cocina'],
+            ['qr-06', 'qr_resource_placeholder', 'Sistema chaflan cocinas'],
+            ['qr-07', 'qr_resource_placeholder', 'Elementos fundamentales para realizar tu cocina'],
+            ['qr-08', 'qr_resource_placeholder', '¿Cómo cotizar una cocina?'],
+            ['qr-09', 'qr_resource_placeholder', '¿Cómo va estructurado un closet?'],
+            ['qr-10', 'qr_resource_placeholder', '¿Cómo hacer un closet?'],
+            ['qr-11', 'qr_resource_placeholder', 'Sistema corredizo SD Simple y doble'],
+            ['qr-12', 'qr_resource_placeholder', 'Sistema corredizo SD 50'],
+          ];
+          if (figure.entities?.length !== expectedEntities.length) throw new Error('entity count mismatch');
+          for (let i = 0; i < expectedEntities.length; i += 1) {
+            const [id, type, label] = expectedEntities[i];
+            const entity = figure.entities[i];
+            if (entity?.id !== id || entity?.type !== type || entity?.label !== label) throw new Error(`entity semantics mismatch ${id}`);
+            const geometry = entity.geometry;
+            if (geometry?.precision !== 'approximate' || geometry?.primitive !== 'rect') throw new Error(`geometry contract mismatch ${id}`);
+            if ('dimensions' in geometry || 'bbox' in geometry || 'scale' in geometry) throw new Error(`metric inference field present ${id}`);
+            const b = geometry.bounds;
+            if (!b || !normalized(b.x) || !normalized(b.y) || typeof b.width !== 'number' || b.width <= 0 || typeof b.height !== 'number' || b.height <= 0 || b.x + b.width > 1 || b.y + b.height > 1) throw new Error(`bounds mismatch ${id}`);
+          }
+
+          const rows = [
+            figure.entities.slice(0, 3),
+            figure.entities.slice(3, 6),
+            figure.entities.slice(6, 9),
+            figure.entities.slice(9, 12),
+          ];
+          for (const row of rows) {
+            const xs = row.map((entity) => entity.geometry.bounds.x);
+            if (!(xs[0] < xs[1] && xs[1] < xs[2])) throw new Error('source column order mismatch');
+          }
+          for (let i = 0; i < rows.length - 1; i += 1) {
+            const upper = rows[i].map((entity) => entity.geometry.bounds.y);
+            const lower = rows[i + 1].map((entity) => entity.geometry.bounds.y);
+            if (!(Math.max(...upper) < Math.min(...lower))) throw new Error('source row order mismatch');
+          }
+
+          if (!Array.isArray(figure.relationships) || figure.relationships.length !== 0) throw new Error('relationships must remain empty');
+          if (!Array.isArray(figure.measurements) || figure.measurements.length !== 0) throw new Error('measurements must remain empty');
+          if ('educational_sequence' in figure) throw new Error('educational_sequence must remain absent');
+
+          const expectedAnnotations = expectedEntities.map(([id, _type, label]) => [`ann-${id}-title`, id, label]);
+          if (figure.annotations?.length !== expectedAnnotations.length) throw new Error('annotation count mismatch');
+          for (let i = 0; i < expectedAnnotations.length; i += 1) {
+            const [annotationId, target, text] = expectedAnnotations[i];
+            const annotation = figure.annotations[i];
+            if (annotation?.id !== annotationId || annotation?.target_entity_id !== target || annotation?.text !== text) throw new Error(`annotation semantics mismatch ${annotationId}`);
+            if (annotation.placement?.precision !== 'approximate' || !normalized(annotation.placement?.x) || !normalized(annotation.placement?.y)) throw new Error(`annotation placement mismatch ${annotationId}`);
+          }
+
+          if (figure.layers?.length !== 2) throw new Error('layer count mismatch');
+          const entityIds = expectedEntities.map(([id]) => id);
+          const annotationIds = expectedAnnotations.map(([id]) => id);
+          const geometryLayer = figure.layers[0];
+          const labelsLayer = figure.layers[1];
+          if (geometryLayer?.id !== 'geometry' || geometryLayer?.order !== 10 || JSON.stringify(geometryLayer.entity_ids ?? []) !== JSON.stringify(entityIds)) throw new Error('geometry layer mismatch');
+          if (labelsLayer?.id !== 'labels' || labelsLayer?.order !== 20 || JSON.stringify(labelsLayer.annotation_ids ?? []) !== JSON.stringify(annotationIds)) throw new Error('labels layer mismatch');
+
+          if (figure.camera?.coordinate_space !== 'normalized_figure') throw new Error('camera mismatch');
+          const viewport = figure.camera?.viewport;
+          if (!viewport || viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1) throw new Error('viewport mismatch');
+
+          const summary = String(figure.accessibility?.summary ?? '').toLowerCase();
+          const notes = String(figure.review?.notes ?? '').toLowerCase();
+          const semanticText = `${summary} ${notes}`;
+          if (!semanticText.includes('no funcional')) throw new Error('non-functional QR guardrail missing');
+          if (!semanticText.includes('payload')) throw new Error('payload guardrail missing');
+          if (!semanticText.includes('decodific')) throw new Error('decode guardrail missing');
+          if (!semanticText.includes('verific')) throw new Error('verification guardrail missing');
+          if (!semanticText.includes('no métrica') || !semanticText.includes('no está a escala')) throw new Error('non-metric/not-to-scale guardrail missing');
+          if (!semanticText.includes('no se debe generar ningún qr funcional')) throw new Error('functional QR prohibition missing');
+          if (!semanticText.includes('no se importan títulos ni contenido de páginas vecinas')) throw new Error('neighbor-page guardrail missing');
+
+          const serialized = JSON.stringify(figure).toLowerCase();
+          for (const forbidden of ['http://', 'https://', 'www.', 'whatsapp', 'youtube', 'vimeo', '"camas"', 'separador']) {
+            if (serialized.includes(forbidden)) throw new Error(`forbidden inferred destination/neighbor content present: ${forbidden}`);
+          }
+
+          console.log(JSON.stringify({
+            knowledge_version: manifest.knowledge_version,
+            total_figures: bundle.figures.length,
+            figure_id: figure.figure_id,
+            render_contract: figure.reconstruction.render_contract,
+            entities: figure.entities.length,
+            annotations: figure.annotations.length,
+            measurements: figure.measurements.length,
+            relationships: figure.relationships.length,
+            layers: figure.layers.length,
+          }));
+          NODE
+
+      - name: Run PC tests
+        working-directory: pc
+        run: npm test
+
+      - name: Typecheck
+        working-directory: pc
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: pc
+        run: npm run build
+
+      - name: Audit dependencies
+        working-directory: pc
+        run: npm audit
